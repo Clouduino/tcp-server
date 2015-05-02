@@ -8,6 +8,7 @@ import akka.util.ByteString
 import java.nio.charset.StandardCharsets.US_ASCII
 import scala.concurrent.duration._
 import akka.actor.Cancellable
+import akka.actor.Stash
 
 object ConnectionHandler {
   def props(connection: ActorRef, listener: ActorRef, server: ActorRef): Props =
@@ -18,18 +19,23 @@ object ConnectionHandler {
   case class Send(data: Byte)
 }
 
-class ConnectionHandler(connection: ActorRef, listener: ActorRef, server: ActorRef) extends Actor {
+class ConnectionHandler(
+  connection : ActorRef,
+  listener   : ActorRef,
+  server     : ActorRef
+) extends Actor with Stash {
+
   import Tcp._
   import context.dispatcher
   import Protocol._
 
   object TimeOutWaitingForId
+  case class CloseConnection(message: Option[Byte])
 
   def receive = waitingForId()
 
   private def handlePeerClose: Receive = {
-    case PeerClosed =>
-      server ! ConnectionHandler.Deactivated(self)
+    case _: ConnectionClosed => closeConnection(message = None)
   }
 
   private def waitingForId(
@@ -54,8 +60,9 @@ class ConnectionHandler(connection: ActorRef, listener: ActorRef, server: ActorR
               idBytes decodeString US_ASCII.name
             }
 
-            context become validatingId(id, remaining drop 1)
+            context become validatingId(id)
 
+            self ! Received(remaining drop 1)
             listener ! Server.ClientConnected(id)
 
           case Some(_) =>
@@ -75,18 +82,18 @@ class ConnectionHandler(connection: ActorRef, listener: ActorRef, server: ActorR
       case TimeOutWaitingForId => closeConnection(ID_NOT_RECEIVED)
     }
 
-  private def validatingId(id: String, pendingData: ByteString): Receive =
+  private def validatingId(id: String): Receive =
     handlePeerClose orElse {
 
       case Server.Accepted =>
         context become validated(id)
         server ! ConnectionHandler.Activated(id, self)
-        self ! Received(pendingData)
+        unstashAll()
 
-      case Server.Rejected => closeConnection(ID_NOT_ACCEPTED)
+      case Server.Rejected =>
+        closeConnection(ID_NOT_ACCEPTED)
 
-      case Received(data) =>
-        context become validatingId(id, pendingData ++ data)
+      case _: Received => stash()
     }
 
   private def validated(id: String): Receive =
@@ -108,11 +115,23 @@ class ConnectionHandler(connection: ActorRef, listener: ActorRef, server: ActorR
         }
     }
 
+  private def closing: Receive = {
+    case CloseConnection(message) =>
+      message foreach send
+      server ! ConnectionHandler.Deactivated(self)
+
+    case _ => // ignore any other messages
+  }
+
   private def send(data: Byte) =
     connection ! Write(ByteString(data))
 
-  private def closeConnection(message: Byte) = {
-    send(message)
-    server ! ConnectionHandler.Deactivated(self)
+  private def closeConnection(message: Byte): Unit =
+    closeConnection(Some(message))
+
+  private def closeConnection(message: Option[Byte]): Unit = {
+    unstashAll()
+    context become closing
+    self ! CloseConnection(message)
   }
 }

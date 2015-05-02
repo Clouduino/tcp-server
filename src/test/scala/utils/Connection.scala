@@ -10,6 +10,7 @@ import akka.util.ByteString
 import io.clouduino.convert
 import akka.io.IO
 import java.nio.charset.StandardCharsets.US_ASCII
+import akka.actor.Stash
 
 trait Connection {
   def send(message: Array[Byte]): Unit
@@ -100,7 +101,7 @@ object Connection {
     case object Closed
   }
 
-  class Client(ip: String, port: Int) extends Actor {
+  class Client(ip: String, port: Int) extends Actor with Stash {
 
     import Tcp._
     import context.system
@@ -109,9 +110,9 @@ object Connection {
 
     private var listener: Option[ActorRef] = None
 
-    def receive = connecting()
+    def receive = connecting
 
-    private def connecting(pendingSends: Seq[Client.Send] = Seq.empty): Receive =
+    private def connecting: Receive =
       handleDisconnect orElse handleNewListeners orElse {
 
         case CommandFailed(_: Connect) =>
@@ -122,10 +123,9 @@ object Connection {
           val connection = sender
           connection ! Register(self)
           context become connected(connection)
-          pendingSends foreach (self ! _)
+          unstashAll()
 
-        case send: Client.Send =>
-          context become connecting(pendingSends :+ send)
+        case _: Client.Send => stash()
       }
 
     private def connected(connection: ActorRef): Receive =

@@ -43,7 +43,7 @@ connection send message
 received is 240
 connection was closed
 ```
-If we try to send an id longer than `256` bytes, we will also result in a `240`
+If we try to send an id longer than `256` bytes, we will also receive a `240`
 (id not received message).
  
 ```scala
@@ -101,7 +101,7 @@ reserved foreach { message =>
   connection was closed
 }
 ```
-Sending more than 256 messages in one chunk resuls is a `242` (data not
+Sending more than `256` messages in one chunk resuls is a `242` (data not
 accepted message)
 ```scala
 val connection = newConnection
@@ -137,5 +137,5 @@ preventing brute force
 rate limit
 > Pending: TODO
 
-Closing server
+
 Shutting down system

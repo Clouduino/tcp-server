@@ -54,7 +54,7 @@ object ConnectionListener {
   def props = Props(new ConnectionListener)
 }
 
-val listener = system.actorOf(ConnectionListener.props)
+val listener = system actorOf ConnectionListener.props
 
 ```
 Now that we have listener to deal with incomming connections, we can create the server.
@@ -62,7 +62,7 @@ Now that we have listener to deal with incomming connections, we can create the 
 ```scala
 import io.clouduino.Server
 
-val server = system.actorOf(Server.props(ip = "localhost", port = 8888, listener = listener))
+val server = system actorOf Server.props(ip = "localhost", port = 8888, listener = listener)
 
 ```
 The server is now ready to handle incoming connections. For more details about communicating

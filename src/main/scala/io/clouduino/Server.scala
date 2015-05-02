@@ -7,7 +7,6 @@ import akka.io.Tcp
 import akka.io.IO
 import java.net.InetSocketAddress
 import akka.util.ByteString
-import java.nio.charset.StandardCharsets.US_ASCII
 
 class Server(ip: String, port: Int, listener: ActorRef) extends Actor {
 
@@ -46,6 +45,8 @@ class Server(ip: String, port: Int, listener: ActorRef) extends Actor {
 
   private def connected: Receive = {
 
+    case Server.Ready => sender ! Server.Ready
+
     case Server.Send(id, data) =>
       handlers get id foreach (_ ! ConnectionHandler.Send(data))
 
@@ -77,60 +78,4 @@ object Server {
   case object Rejected
 
   case object Ready
-}
-
-object ConnectionHandler {
-  def props(connection: ActorRef, listener: ActorRef, server: ActorRef): Props =
-    Props(new ConnectionHandler(connection, listener, server))
-
-  case class Activated(id: String, handler: ActorRef)
-  case class Deactivated(handler: ActorRef)
-  case class Send(data: Byte)
-
-  val MAX_ID_SIZE = 256
-}
-
-class ConnectionHandler(connection: ActorRef, listener: ActorRef, server: ActorRef) extends Actor {
-  import ConnectionHandler.MAX_ID_SIZE
-  import Tcp._
-
-  def receive = waitingForId()
-
-  private def handlePeerClose: Receive = {
-    case PeerClosed => server ! ConnectionHandler.Deactivated(self)
-  }
-
-  private def waitingForId(recieved: ByteString = ByteString.empty): Receive =
-    handlePeerClose orElse {
-
-      case Received(data) =>
-        val id = data take MAX_ID_SIZE takeWhile (_ != 0) decodeString US_ASCII.name
-        context become validatingId(id)
-        listener ! Server.ClientConnected(id)
-    }
-
-  private def validatingId(id: String): Receive =
-    handlePeerClose orElse {
-
-      case Server.Accepted =>
-        context become validated(id)
-        server ! ConnectionHandler.Activated(id, self)
-
-      case Server.Rejected =>
-        connection ! Close
-        server ! ConnectionHandler.Deactivated(self)
-
-    }
-
-  private def validated(id: String): Receive =
-    handlePeerClose orElse {
-
-      case ConnectionHandler.Send(data) =>
-        connection ! Write(ByteString(data))
-
-      case Received(data) =>
-        data foreach { byte =>
-          listener ! Server.Received(id, convert toUnsigned byte)
-        }
-    }
 }

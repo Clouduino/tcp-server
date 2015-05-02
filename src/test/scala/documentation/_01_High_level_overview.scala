@@ -14,7 +14,7 @@ object _01_High_level_overview extends Specification {
    |environment.
    |""".stripMargin - {
 
-  """|
+  """|The complete `0xF0` to `0xFF` range is reserved.
      |""".stripMargin - {
 
      }

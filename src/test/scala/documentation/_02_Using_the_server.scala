@@ -1,13 +1,13 @@
 package documentation
 
-import utils.Documentation
-import utils.Connection
-import scala.concurrent.Promise
-import scala.concurrent.Await
-import scala.concurrent.duration._
+import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
-import akka.actor.ActorRef
+import scala.concurrent.Await
+import scala.concurrent.duration._
+import utils.Documentation
+import utils.ActorSystemForConnection
+import utils.ServerReady.waitForServerToBeReady
 
 object _02_Using_the_server extends Documentation {
 
@@ -21,24 +21,9 @@ object _02_Using_the_server extends Documentation {
      import akka.actor.ActorSystem
 
      val system = ActorSystem("clouduino")
-   } chain { System =>
+   } chain { SystemInstance =>
 
-     var lastPrinted = Promise[String]
-     def printed: String = {
-       scala.Predef.println("Waiting for last printed")
-       val result = Await.result(lastPrinted.future, 1.second)
-       scala.Predef.println("Got " + result)
-       scala.Predef.println("Clearing last printed")
-       lastPrinted = Promise[String]
-       result
-     }
-     def println(value: String): Unit = {
-       scala.Predef.println(value)
-       scala.Predef.println("Completing promise")
-       lastPrinted success value
-     }
-
-     import System.system
+     import SystemInstance.system
 
 """|The next thing we need a way of handling client connections and their data.
    | """.stripMargin -- new Example {
@@ -62,10 +47,10 @@ object _02_Using_the_server extends Documentation {
              println(s"Accepted client with id `$id`")
              sender ! Accepted
            }
-           else {
-             println(s"Rejected client with id `$id`")
-             sender ! Rejected
-           }
+           //else {
+           //  println(s"Rejected client with id `$id`")
+           //  sender ! Rejected
+           //}
 
          case Received(id, data) =>
            // The data is a simple unsigned byte (represented as a signed short)
@@ -80,17 +65,17 @@ object _02_Using_the_server extends Documentation {
        def props = Props(new ConnectionListener)
      }
 
-     val listener = system.actorOf(ConnectionListener.props)
+     val listener = system actorOf ConnectionListener.props
 
-   } chain { Listener =>
+   } chain { ListenerInstance =>
 
-   import Listener.listener
+   import ListenerInstance.listener
 
 """|Now that we have listener to deal with incomming connections, we can create the server.
    | """.stripMargin -- new Example {
      import io.clouduino.Server
 
-     val server = system.actorOf(Server.props(ip = "localhost", port = 8888, listener = listener))
+     val server = system actorOf Server.props(ip = "localhost", port = 8888, listener = listener)
 
    } chain { ServerInstance =>
 
@@ -104,21 +89,14 @@ object _02_Using_the_server extends Documentation {
 
    import java.nio.charset.StandardCharsets.US_ASCII
 
-   var lastReceived = Promise[Short]
-   def received = {
-     val result = Await.result(lastReceived.future, 1.second)
-     lastReceived = Promise[Short]
-     result
-   }
-   val connection = Connection connect ("localhost", 8888)
-   connection receive (lastReceived success _)
-
+   val connectionSystem = ActorSystemForConnection("connection-system")
+   val connection = connectTo("localhost" -> 8888)(connectionSystem)
 
 """|For this example we have already created a connection. The first data we send is an string of
    |bytes followed by a null byte.
    | """.stripMargin - example {
-     val NULL = 0.toByte
      val id = "let me in" getBytes US_ASCII
+     val NULL = 0.toByte
 
      val message = id :+ NULL
 
@@ -154,11 +132,12 @@ object _02_Using_the_server extends Documentation {
      system.awaitTermination()
    }
 
-   }}}} // We nested some chained examples without indentation to improve readability
+   "Shutting down connection system" - {
+     connectionSystem.system.shutdown()
+     connectionSystem.system.awaitTermination()
+   }
 
-  private def waitForServerToBeReady(server: ActorRef) = {
-    import io.clouduino.Server.Ready
-     implicit val timeout = Timeout(1.second)
-     Await.result(server ? Ready, 1.second)
-  }
+   "failing to accept and reject should timeout" - {}
+
+   }}}} // We nested some chained examples without indentation to improve readability
 }

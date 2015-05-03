@@ -36,10 +36,10 @@ class ConnectionListener extends Actor {
         println(s"Accepted client with id `$id`")
         sender ! Accepted
       }
-      else {
-        println(s"Rejected client with id `$id`")
-        sender ! Rejected
-      }
+      //else {
+      //  println(s"Rejected client with id `$id`")
+      //  sender ! Rejected
+      //}
 
     case Received(id, data) =>
       // The data is a simple unsigned byte (represented as a signed short)
@@ -72,8 +72,8 @@ For this example we have already created a connection. The first data we send is
 bytes followed by a null byte.
  
 ```scala
-val NULL = 0.toByte
 val id = "let me in" getBytes US_ASCII
+val NULL = 0.toByte
 
 val message = id :+ NULL
 
@@ -103,9 +103,22 @@ server ! Send("let me in", 210.toByte)
 
 received is 210
 ```
+Disconnecting the client will send the correct message to the listener.
+ 
+```scala
+connection.close()
+
+printed is "Client with id `let me in` disconnected"
+```
 Make sure to shutdown the system when done
  
 ```scala
 system.shutdown()
 system.awaitTermination()
 ```
+Shutting down connection system
+> Pending: TODO
+
+failing to accept and reject should timeout
+> Pending: TODO
+

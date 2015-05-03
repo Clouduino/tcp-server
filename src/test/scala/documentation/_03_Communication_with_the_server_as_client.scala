@@ -42,7 +42,7 @@ object _03_Communication_with_the_server_as_client extends Documentation {
 
          val system = ActorSystem("server-client-communication")
          val listener = system actorOf Props(new Listener)
-         val server = system actorOf Server.props("localhost", 8888, listener)
+         val server = system actorOf Server.props("localhost", 9999, listener)
 
        } chain { ServerInstance =>
 
@@ -51,7 +51,7 @@ object _03_Communication_with_the_server_as_client extends Documentation {
 
        waitForServerToBeReady(server)
 
-       def newConnection = connectTo("localhost" -> 8888)
+       def newConnection = connectTo("localhost" -> 9999)
 
    s"""|As you can see, we only accept id's that have the value "test".
        |

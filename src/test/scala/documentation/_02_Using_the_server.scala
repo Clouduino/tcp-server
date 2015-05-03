@@ -126,6 +126,13 @@ object _02_Using_the_server extends Documentation {
      received is 210
    }
 
+"""|Disconnecting the client will send the correct message to the listener.
+   | """.stripMargin - example {
+     connection.close()
+
+     printed is "Client with id `let me in` disconnected"
+   }
+
 """|Make sure to shutdown the system when done
    | """.stripMargin - sideEffectExample {
      system.shutdown()

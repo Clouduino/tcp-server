@@ -3,11 +3,12 @@ package utils
 import scala.concurrent.Await
 import scala.concurrent.Promise
 import scala.concurrent.duration._
+import scala.util.Try
 
 trait PrintlnMock {
   private var lastPrinted = Promise[String]
   def printed: String = {
-    val result = Await.result(lastPrinted.future, 1.second)
+    val result = Try(Await.result(lastPrinted.future, 1.second)) getOrElse "Nothing was printed"
     lastPrinted = Promise[String]
     result
   }

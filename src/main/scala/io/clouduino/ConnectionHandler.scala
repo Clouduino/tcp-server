@@ -11,8 +11,8 @@ import akka.actor.Cancellable
 import akka.actor.Stash
 
 object ConnectionHandler {
-  def props(connection: ActorRef, listener: ActorRef, server: ActorRef): Props =
-    Props(new ConnectionHandler(connection, listener, server))
+  def props(connection: ActorRef, server: ActorRef): Props =
+    Props(new ConnectionHandler(connection, server))
 
   case class Activated(id: String, handler: ActorRef)
   case class Deactivated(handler: ActorRef)
@@ -21,117 +21,124 @@ object ConnectionHandler {
 
 class ConnectionHandler(
   connection : ActorRef,
-  listener   : ActorRef,
   server     : ActorRef
 ) extends Actor with Stash {
 
   import Tcp._
   import context.dispatcher
+  import context.system
   import Protocol._
+  private val scheduler = system.scheduler
 
-  object TimeOutWaitingForId
-  case class CloseConnection(message: Option[Byte])
+  private object TimeOutWaitingForId
+  private case class CloseConnection(id: Option[String], message: Option[Byte])
 
-  def receive = waitingForId()
+  def receive = states.waitingForId()
 
-  private def handlePeerClose: Receive = {
-    case _: ConnectionClosed => closeConnection(message = None)
+  private object states {
+
+    def waitingForId(
+      previouslyReceived: ByteString = ByteString.empty,
+      cancelWaitTimeout: Option[Cancellable] = None
+    ): Receive =
+      handlePeerClose(id = None) orElse {
+
+        case Received(data) =>
+          handleDataReceived(previouslyReceived ++ data, cancelWaitTimeout)
+
+        case TimeOutWaitingForId =>
+          closeConnection(id = None, ID_NOT_RECEIVED)
+      }
+
+    def validatingId(id: String): Receive =
+      handlePeerClose(Some(id)) orElse {
+
+        case Server.Accepted =>
+          context become validated(id)
+          server ! ConnectionHandler.Activated(id, self)
+          unstashAll()
+
+        case Server.Rejected =>
+          closeConnection(id, ID_NOT_ACCEPTED)
+
+        case _ => stash()
+      }
+
+    def validated(id: String): Receive =
+      handlePeerClose(Some(id)) orElse {
+
+        case ConnectionHandler.Send(data) =>
+          send(data)
+
+        case Received(data) if data.size > MAX_MESSAGE_COUNT =>
+          closeConnection(id, DATA_NOT_ACCEPTED)
+
+        case Received(data) =>
+          data foreach {
+            case byte if Protocol isReserved byte =>
+              closeConnection(id, DATA_NOT_ACCEPTED)
+
+            case byte =>
+              server ! Server.Received(id, convert toUnsigned byte)
+          }
+      }
+
+    def closing: Receive = {
+      case CloseConnection(id, message) =>
+        message foreach send
+        id foreach (server ! Server.ClientDisconnected(_))
+        server ! ConnectionHandler.Deactivated(self)
+
+      case _ => // ignore any other messages
+    }
+
+    private def handlePeerClose(id: Option[String]): Receive = {
+      case _: ConnectionClosed => closeConnection(id, message = None)
+    }
   }
 
-  private def waitingForId(
-    previouslyReceived: ByteString = ByteString.empty,
-    cancelWaitTimeout: Option[Cancellable] = None
-  ): Receive =
-    handlePeerClose orElse {
+  private def handleDataReceived(data: ByteString, cancelWaitTimeout: Option[Cancellable]) = {
+    cancelWaitTimeout foreach (_.cancel())
 
-      case Received(data) if previouslyReceived.size + data.size > MAX_ID_SIZE =>
-        cancelWaitTimeout foreach (_.cancel())
-        closeConnection(ID_NOT_RECEIVED)
+    if (data.size > MAX_ID_SIZE) closeConnection(id = None, ID_NOT_RECEIVED)
+    else handleIdData(data)
+  }
 
-      case Received(data) =>
-        cancelWaitTimeout foreach (_.cancel())
+  private def handleIdData(data: ByteString) = {
 
-        val (idPart, remaining) = data span (_ != ID_TERMINATOR)
+    val (id, remaining) = data span (_ != ID_TERMINATOR)
 
-        remaining.headOption match {
-          case Some(ID_TERMINATOR) =>
-            val id = {
-              val idBytes = previouslyReceived ++ idPart
-              idBytes decodeString US_ASCII.name
-            }
+    if (remaining.nonEmpty) validateId(id, remaining drop 1)
+    else waitForMoreData(data)
+  }
 
-            context become validatingId(id)
+  private def waitForMoreData(data: ByteString) = {
+    val cancellable = scheduler.scheduleOnce(500.millis, self, TimeOutWaitingForId)
 
-            self ! Received(remaining drop 1)
-            listener ! Server.ClientConnected(id)
+    context become states.waitingForId(previouslyReceived = data, Some(cancellable))
+  }
 
-          case Some(_) =>
-            sys error "This can not happen, we do a span until the terminator."
+  private def validateId(data: ByteString, remaining: ByteString) = {
+    val id = data decodeString US_ASCII.name
 
-          case None =>
-            val cancellable = context.system.scheduler
-              .scheduleOnce(
-                delay = 500.milliseconds,
-                receiver = self,
-                message = TimeOutWaitingForId
-              )
+    context become states.validatingId(id)
 
-            context become waitingForId(previouslyReceived ++ data, Some(cancellable))
-        }
-
-      case TimeOutWaitingForId => closeConnection(ID_NOT_RECEIVED)
-    }
-
-  private def validatingId(id: String): Receive =
-    handlePeerClose orElse {
-
-      case Server.Accepted =>
-        context become validated(id)
-        server ! ConnectionHandler.Activated(id, self)
-        unstashAll()
-
-      case Server.Rejected =>
-        closeConnection(ID_NOT_ACCEPTED)
-
-      case _: Received => stash()
-    }
-
-  private def validated(id: String): Receive =
-    handlePeerClose orElse {
-
-      case ConnectionHandler.Send(data) =>
-        send(data)
-
-      case Received(data) if data.size > MAX_MESSAGE_COUNT =>
-        closeConnection(DATA_NOT_ACCEPTED)
-
-      case Received(data) =>
-        data foreach {
-          case byte if Protocol isReserved byte =>
-            closeConnection(DATA_NOT_ACCEPTED)
-
-          case byte =>
-            listener ! Server.Received(id, convert toUnsigned byte)
-        }
-    }
-
-  private def closing: Receive = {
-    case CloseConnection(message) =>
-      message foreach send
-      server ! ConnectionHandler.Deactivated(self)
-
-    case _ => // ignore any other messages
+    self ! Received(remaining)
+    server ! Server.ClientConnected(id)
   }
 
   private def send(data: Byte) =
     connection ! Write(ByteString(data))
 
-  private def closeConnection(message: Byte): Unit =
-    closeConnection(Some(message))
+  private def closeConnection(id: String, message: Byte): Unit =
+    closeConnection(Some(id), Some(message))
 
-  private def closeConnection(message: Option[Byte]): Unit = {
+  private def closeConnection(id: Option[String], message: Byte): Unit =
+    closeConnection(id, Some(message))
+
+  private def closeConnection(id: Option[String], message: Option[Byte]): Unit = {
     unstashAll()
-    context become closing
-    self ! CloseConnection(message)
+    context become states.closing
+    self ! CloseConnection(id, message)
   }
 }

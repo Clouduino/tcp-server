@@ -24,7 +24,7 @@ class Listener extends Actor {
 
 val system = ActorSystem("server-client-communication")
 val listener = system actorOf Props(new Listener)
-val server = system actorOf Server.props("localhost", 8888, listener)
+val server = system actorOf Server.props("localhost", 9999, listener)
 
 ```
 As you can see, we only accept id's that have the value "test".

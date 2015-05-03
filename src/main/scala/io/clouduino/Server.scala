@@ -7,48 +7,47 @@ import akka.io.Tcp
 import akka.io.IO
 import java.net.InetSocketAddress
 import akka.util.ByteString
+import akka.actor.Stash
 
-class Server(ip: String, port: Int, listener: ActorRef) extends Actor {
+class Server(ip: String, port: Int, listener: ActorRef) extends Actor with Stash {
 
   import Tcp._
   import context.system
 
   IO(Tcp) ! Bind(self, new InetSocketAddress(ip, port))
 
-  def receive = connecting(
-    pendingSends = Seq.empty,
-    waitingForReady = Seq.empty
-  )
+  def receive = connecting
 
-  private def connecting(
-    pendingSends: Seq[Server.Send],
-    waitingForReady: Seq[ActorRef]
-  ): Receive = {
-
-    case Bound(_) =>
-      context become connected
-      waitingForReady foreach (_ ! Server.Ready)
-      pendingSends foreach (self ! _)
+  private def connecting: Receive = {
 
     case CommandFailed(_: Bind) =>
       listener ! Server.BindFailed(ip, port)
       context stop self
 
-    case send: Server.Send =>
-      context become connecting(pendingSends :+ send, waitingForReady)
+    case Bound(_) =>
+      context become connected
+      unstashAll()
 
-    case Server.Ready =>
-      context become connecting(pendingSends, waitingForReady :+ sender)
+    case _ =>
+      stash()
   }
 
   private var handlers = Map.empty[String, ActorRef]
 
   private def connected: Receive = {
 
-    case Server.Ready => sender ! Server.Ready
+    case Server.Ready =>
+      sender ! Server.Ready
 
     case Server.Send(id, data) =>
       handlers get id foreach (_ ! ConnectionHandler.Send(data))
+
+    case message @ (
+      _: Server.ClientConnected |
+      _: Server.Received |
+      _: Server.ClientDisconnected
+    ) =>
+      listener forward message
 
     case ConnectionHandler.Activated(id, handler) =>
       handlers += (id -> handler)
@@ -59,7 +58,7 @@ class Server(ip: String, port: Int, listener: ActorRef) extends Actor {
 
     case Connected(_, _) =>
       val connection = sender
-      val handler = context actorOf ConnectionHandler.props(connection, listener, self)
+      val handler = context actorOf ConnectionHandler.props(connection, self)
       connection ! Register(handler)
   }
 }

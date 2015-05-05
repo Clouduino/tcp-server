@@ -7,6 +7,7 @@ import io.clouduino.Protocol
 import io.clouduino.convert
 import io.clouduino.ConnectionHandler
 import scala.concurrent.duration._
+import scala.concurrent.Future
 
 object _03_Communication_with_the_server_as_client extends Documentation {
 
@@ -24,25 +25,23 @@ object _03_Communication_with_the_server_as_client extends Documentation {
        |
        |For this example we have use the following server setup
        | """.stripMargin -- new Example {
-         import akka.actor.Actor
-         import akka.actor.ActorSystem
-         import akka.actor.Props
+         import io.clouduino.ClientHandler
          import io.clouduino.Server
+         import akka.actor.ActorSystem
 
-         class Listener extends Actor {
+         object CustomClientHandler extends ClientHandler {
 
-           import Server._
+           def isValidId(id: String): Future[Boolean] =
+             Future successful (id == "test")
 
-           def receive = {
-             case ClientConnected(id) =>
-               if (id == "test") sender ! Accepted
-               else sender ! Rejected
-           }
+           def handleData(id: String, data: Short): Future[Unit] =
+             Future successful unit
+
+           private def unit = ()
          }
 
          val system = ActorSystem("server-client-communication")
-         val listener = system actorOf Props(new Listener)
-         val server = system actorOf Server.props("localhost", 9999, listener)
+         val server = system actorOf Server.props("localhost", 9999, CustomClientHandler)
 
        } chain { ServerInstance =>
 

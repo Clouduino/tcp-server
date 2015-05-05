@@ -9,19 +9,46 @@ import java.net.InetSocketAddress
 import akka.util.ByteString
 import akka.actor.Stash
 
-class Server(ip: String, port: Int, listener: ActorRef) extends Actor with Stash {
+object Server {
+  def props(ip: String, port: Int, clientHandler: ClientHandler, eventHandler: Option[EventHandler]): Props =
+    Props(new Server(ip, port, clientHandler, eventHandler))
+
+  def props(id: String, port: Int, clientHandler: ClientHandler): Props =
+    props(id, port, clientHandler, None)
+
+  case class Send(id: String, data: Byte)
+  case object Ready
+
+  trait EventHandler {
+    def bindFailed(ip: String, port: Int): Unit
+    def clientConnected(id: String): Unit
+    def clientDisconnected(id: String): Unit
+  }
+}
+
+class Server(
+  ip: String,
+  port: Int,
+  clientHandler: ClientHandler,
+  eventHandler: Option[Server.EventHandler]
+) extends Actor with Stash {
 
   import Tcp._
   import context.system
+  import context.dispatcher
 
   IO(Tcp) ! Bind(self, new InetSocketAddress(ip, port))
+
+  def connectionHandler(connection: ActorRef) = Props(
+    new ConnectionHandler(connection, self, new DefaultDataHandler(clientHandler))
+  )
 
   def receive = connecting
 
   private def connecting: Receive = {
 
     case CommandFailed(_: Bind) =>
-      listener ! Server.BindFailed(ip, port)
+      eventHandler foreach (_.bindFailed(ip, port))
       context stop self
 
     case Bound(_) =>
@@ -36,45 +63,29 @@ class Server(ip: String, port: Int, listener: ActorRef) extends Actor with Stash
 
   private def connected: Receive = {
 
+    case Connected(_, _) =>
+      val connection = sender
+      val handler = context actorOf connectionHandler(connection)
+      connection ! Register(handler)
+
     case Server.Ready =>
       sender ! Server.Ready
 
     case Server.Send(id, data) =>
+      println("Server.send " + id + " " + data)
+      println(handlers get id)
       handlers get id foreach (_ ! ConnectionHandler.Send(data))
 
-    case message @ (
-      _: Server.ClientConnected |
-      _: Server.Received |
-      _: Server.ClientDisconnected
-    ) =>
-      listener forward message
-
     case ConnectionHandler.Activated(id, handler) =>
+      eventHandler foreach (_ clientConnected id)
       handlers += (id -> handler)
 
     case ConnectionHandler.Deactivated(handler) =>
-      handlers = handlers filterNot { case (_, registered) => registered == handler }
+      val ids = handlers map (_.swap)
+      ids get handler foreach { id =>
+        handlers -= id
+        eventHandler foreach (_ clientDisconnected id)
+      }
       context stop handler
-
-    case Connected(_, _) =>
-      val connection = sender
-      val handler = context actorOf ConnectionHandler.props(connection, self)
-      connection ! Register(handler)
   }
-}
-
-object Server {
-  def props(ip: String, port: Int, listener: ActorRef): Props =
-    Props(new Server(ip, port, listener))
-
-  case class BindFailed(ip: String, port: Int)
-  case class ClientConnected(id: String)
-  case class ClientDisconnected(id: String)
-  case class Received(id: String, data: Short)
-  case class Send(id: String, data: Byte)
-
-  case object Accepted
-  case object Rejected
-
-  case object Ready
 }

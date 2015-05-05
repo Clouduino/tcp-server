@@ -4,6 +4,7 @@ import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
 import scala.concurrent.Await
+import scala.concurrent.Future
 import scala.concurrent.duration._
 import utils.Documentation
 import utils.ActorSystemForConnection
@@ -27,55 +28,62 @@ object _02_Using_the_server extends Documentation {
 
 """|The next thing we need a way of handling client connections and their data.
    | """.stripMargin -- new Example {
-     import akka.actor.Actor
-     import akka.actor.Props
-     import io.clouduino.Listener
-     import io.clouduino.Server
+     import io.clouduino.ClientHandler
 
-     class ConnectionListener extends Actor {
-
-       import Server.{BindFailed, ClientConnected, Received, ClientDisconnected}
-       import Server.{Accepted, Rejected}
-
-       def receive = {
-         case BindFailed(ip, port) =>
-           println(s"Server failed to bind to `$ip` at port `$port`")
-
-         case ClientConnected(id) =>
-           // You can use the id to check if you want to accept the client
-           if (id == "let me in") {
-             println(s"Accepted client with id `$id`")
-             sender ! Accepted
-           }
-           //else {
-           //  println(s"Rejected client with id `$id`")
-           //  sender ! Rejected
-           //}
-
-         case Received(id, data) =>
-           // The data is a simple unsigned byte (represented as a signed short)
-           println(s"Received `$data` from the client with id `$id`")
-
-         case ClientDisconnected(id) =>
-           println(s"Client with id `$id` disconnected")
+     object CustomClientHandler extends ClientHandler {
+       def isValidId(id: String): Future[Boolean] = Future successful {
+         // You can use the id to check if you want to accept the client
+         if (id == "let me in") {
+           println(s"Accepted client with id `$id`")
+           true
+         } else {
+           println(s"Rejected client with id `$id`")
+           false
+         }
        }
+       def handleData(id: String, data: Short): Future[Unit] = {
+         // The data is a simple unsigned byte (represented as a signed short)
+         println(s"Received `$data` from the client with id `$id`")
+         Future successful unit
+       }
+
+       private def unit = ()
      }
 
-     object ConnectionListener {
-       def props = Props(new ConnectionListener)
+   } chain { ClientHandlerClass =>
+
+   import ClientHandlerClass.CustomClientHandler
+
+"""|The server allows you to attach an event handler.
+   | """.stripMargin -- new Example {
+     import io.clouduino.Server.EventHandler
+
+     object CustomEventHandler extends EventHandler {
+
+       def bindFailed(ip: String, port: Int): Unit =
+         println(s"Server failed to bind to `$ip` at port `$port`")
+
+       def clientConnected(id: String): Unit = {}
+         //println(s"Client with id `$id` connected")
+
+       def clientDisconnected(id: String): Unit =
+         println(s"Client with id `$id` disconnected")
      }
 
-     val listener = system actorOf ConnectionListener.props
+   } chain { EventHandlerClass =>
 
-   } chain { ListenerInstance =>
-
-   import ListenerInstance.listener
+   import EventHandlerClass.CustomEventHandler
 
 """|Now that we have listener to deal with incomming connections, we can create the server.
    | """.stripMargin -- new Example {
      import io.clouduino.Server
 
-     val server = system actorOf Server.props(ip = "localhost", port = 8888, listener = listener)
+     val server = system actorOf Server.props(
+       ip = "localhost",
+       port = 8888,
+       clientHandler = CustomClientHandler,
+       eventHandler = Some(CustomEventHandler)
+     )
 
    } chain { ServerInstance =>
 
@@ -146,5 +154,5 @@ object _02_Using_the_server extends Documentation {
 
    "failing to accept and reject should timeout" - {}
 
-   }}}} // We nested some chained examples without indentation to improve readability
+   }}}}} // We nested some chained examples without indentation to improve readability
 }

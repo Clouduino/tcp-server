@@ -13,4 +13,6 @@ object Protocol {
 
   val MAX_ID_SIZE       = 256
   val MAX_MESSAGE_COUNT = 256
+
+  abstract class Failure(message: Byte)
 }

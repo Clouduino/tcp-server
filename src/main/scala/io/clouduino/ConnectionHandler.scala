@@ -9,136 +9,127 @@ import java.nio.charset.StandardCharsets.US_ASCII
 import scala.concurrent.duration._
 import akka.actor.Cancellable
 import akka.actor.Stash
+import akka.pattern.pipe
+import scala.reflect.ClassTag
+import scala.concurrent.Future
+import akka.actor.Status
 
 object ConnectionHandler {
-  def props(connection: ActorRef, server: ActorRef): Props =
-    Props(new ConnectionHandler(connection, server))
-
   case class Activated(id: String, handler: ActorRef)
   case class Deactivated(handler: ActorRef)
   case class Send(data: Byte)
 }
 
 class ConnectionHandler(
-  connection : ActorRef,
-  server     : ActorRef
+  connection   : ActorRef,
+  server       : ActorRef,
+  dataHhandler : DataHandler
 ) extends Actor with Stash {
 
   import Tcp._
   import context.dispatcher
   import context.system
   import Protocol._
-  private val scheduler = system.scheduler
 
-  private object TimeOutWaitingForId
-  private case class CloseConnection(id: Option[String], message: Option[Byte])
+  val scheduler = system.scheduler
 
-  def receive = states.waitingForId()
+  def receive = waitingForId()
 
-  private object states {
+  def waitingForId(
+    previouslyReceived: ByteString = ByteString.empty,
+    cancelWaitTimeout: Option[Cancellable] = None
+  ): Receive =
+    handlePeerClose(id = None) orElse {
 
-    def waitingForId(
-      previouslyReceived: ByteString = ByteString.empty,
-      cancelWaitTimeout: Option[Cancellable] = None
-    ): Receive =
-      handlePeerClose(id = None) orElse {
+      case Received(data) =>
+        cancelWaitTimeout foreach (_.cancel())
+        withHandler(
+          execute = _ extractId (previouslyReceived ++ data),
+          handler  = handleExtractIdResult
+        )
 
-        case Received(data) =>
-          handleDataReceived(previouslyReceived ++ data, cancelWaitTimeout)
-
-        case TimeOutWaitingForId =>
-          closeConnection(id = None, ID_NOT_RECEIVED)
-      }
-
-    def validatingId(id: String): Receive =
-      handlePeerClose(Some(id)) orElse {
-
-        case Server.Accepted =>
-          context become validated(id)
-          server ! ConnectionHandler.Activated(id, self)
-          unstashAll()
-
-        case Server.Rejected =>
-          closeConnection(id, ID_NOT_ACCEPTED)
-
-        case _ => stash()
-      }
-
-    def validated(id: String): Receive =
-      handlePeerClose(Some(id)) orElse {
-
-        case ConnectionHandler.Send(data) =>
-          send(data)
-
-        case Received(data) if data.size > MAX_MESSAGE_COUNT =>
-          closeConnection(id, DATA_NOT_ACCEPTED)
-
-        case Received(data) =>
-          data foreach {
-            case byte if Protocol isReserved byte =>
-              closeConnection(id, DATA_NOT_ACCEPTED)
-
-            case byte =>
-              server ! Server.Received(id, convert toUnsigned byte)
-          }
-      }
-
-    def closing: Receive = {
-      case CloseConnection(id, message) =>
-        message foreach send
-        id foreach (server ! Server.ClientDisconnected(_))
-        server ! ConnectionHandler.Deactivated(self)
-
-      case _ => // ignore any other messages
+      case TimeOutWaitingForId =>
+        closeConnection(id = None, ID_NOT_RECEIVED)
     }
 
-    private def handlePeerClose(id: Option[String]): Receive = {
-      case _: ConnectionClosed => closeConnection(id, message = None)
+  def handleExtractIdResult: ExtractIdResult => Unit = {
+
+    case Extracted(id, remaining) =>
+      self ! Received(remaining)
+      server ! ConnectionHandler.Activated(id, self)
+      changeStateTo(waitingForData(id))
+
+    case Invalid(id) => closeConnection(id, ID_NOT_ACCEPTED)
+    case TooMuchData => closeConnection(id = None, ID_NOT_RECEIVED)
+
+    case NotEnoughData(data) =>
+      val cancellable = scheduler.scheduleOnce(500.millis, self, TimeOutWaitingForId)
+      changeStateTo(waitingForId(previouslyReceived = data, Some(cancellable)))
+  }
+
+  def waitingForData(id: String): Receive =
+    handlePeerClose(Some(id)) orElse {
+
+      case ConnectionHandler.Send(data) =>
+        send(data)
+
+      case Received(data) =>
+        withHandler(
+          execute = _.handleData(id, data),
+          handler = handleDataResult(id)
+        )
     }
+
+  def handleDataResult(id: String): HandleDataResult => Unit = {
+    case DataNotAccepted => closeConnection(id, DATA_NOT_ACCEPTED)
+    case TooMuchData     => closeConnection(id, DATA_NOT_ACCEPTED)
+    case DataAccepted    => changeStateTo(waitingForData(id))
   }
 
-  private def handleDataReceived(data: ByteString, cancelWaitTimeout: Option[Cancellable]) = {
-    cancelWaitTimeout foreach (_.cancel())
+  def closing: Receive = {
+    case CloseConnection(id, message) =>
+      message foreach send
+      server ! ConnectionHandler.Deactivated(self)
 
-    if (data.size > MAX_ID_SIZE) closeConnection(id = None, ID_NOT_RECEIVED)
-    else handleIdData(data)
+    case _ => // ignore any other messages
   }
 
-  private def handleIdData(data: ByteString) = {
-
-    val (id, remaining) = data span (_ != ID_TERMINATOR)
-
-    if (remaining.nonEmpty) validateId(id, remaining drop 1)
-    else waitForMoreData(data)
+  def handlePeerClose(id: Option[String]): Receive = {
+    case _: ConnectionClosed => closeConnection(id, message = None)
   }
 
-  private def waitForMoreData(data: ByteString) = {
-    val cancellable = scheduler.scheduleOnce(500.millis, self, TimeOutWaitingForId)
+  def send(data: Byte) = connection ! Write(ByteString(data))
 
-    context become states.waitingForId(previouslyReceived = data, Some(cancellable))
-  }
-
-  private def validateId(data: ByteString, remaining: ByteString) = {
-    val id = data decodeString US_ASCII.name
-
-    context become states.validatingId(id)
-
-    self ! Received(remaining)
-    server ! Server.ClientConnected(id)
-  }
-
-  private def send(data: Byte) =
-    connection ! Write(ByteString(data))
-
-  private def closeConnection(id: String, message: Byte): Unit =
+  def closeConnection(id: String, message: Byte): Unit =
     closeConnection(Some(id), Some(message))
 
-  private def closeConnection(id: Option[String], message: Byte): Unit =
+  def closeConnection(id: Option[String], message: Byte): Unit =
     closeConnection(id, Some(message))
 
-  private def closeConnection(id: Option[String], message: Option[Byte]): Unit = {
-    unstashAll()
-    context become states.closing
+  def closeConnection(id: Option[String], message: Option[Byte]): Unit = {
+    changeStateTo(closing)
     self ! CloseConnection(id, message)
+  }
+
+  def changeStateTo(newState: Receive): Unit = {
+    context become newState
+    unstashAll()
+  }
+
+  def withHandler[T : ClassTag](execute: DataHandler => Future[T], handler: T => Unit): Unit = {
+    changeStateTo {
+      case t: T => handler(t)
+      case _: Received => stash()
+    }
+    execute(dataHhandler) pipeTo self
+  }
+
+  object TimeOutWaitingForId
+  case class CloseConnection(id: Option[String], message: Option[Byte])
+
+  override def unhandled(m: Any) = {
+    println("Unhandled " + m)
+    super.unhandled(m)
+    sys error s"Unhandled: $m"
   }
 }

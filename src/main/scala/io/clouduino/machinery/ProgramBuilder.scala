@@ -35,6 +35,7 @@ class ProgramBuilder[X] {
 
   def Return[A](a:A): Part[A] = ValueOf(a)
   case class ValueOf[A](a: A) extends Part[A]
+
   case class ValueOfFuture[A](a: Future[A]) extends Part[A]
   case class ValueOfEither[A](a: Either[X, A]) extends Part[A]
   case class FlatMap[A, B](a: Part[A], f: A => Part[B]) extends Part[B]
@@ -46,12 +47,39 @@ class ProgramBuilder[X] {
   implicit def executePart(part: Part[X])(implicit ec: ExecutionContext): Future[X] =
     part.execute
 
-  implicit class BooleanOperations(f: Part[Boolean]) {
+  implicit class BooleanOperations[T](value: T)(implicit ev: T As Part[Boolean]) {
     def ifTrue(whenTrue: => Part[X]): Part[Unit] =
-      f branch (if (_) Left(whenTrue) else Right(Empty))
+      value branch (if (_) Left(whenTrue) else Right(Empty))
 
     def ifFalse(whenFalse: => Part[X]): Part[Unit] =
-      f branch (if (_) Right(Empty) else Left(whenFalse))
+      value branch (if (_) Right(Empty) else Left(whenFalse))
+  }
+
+  implicit class ToPartp[T](value: T) {
+    def asPart[A](implicit ev: T As Part[A]): Part[A] = value
+  }
+
+  trait As[-A, +B] extends (A => B) {
+    def apply(a: A): B
+  }
+
+  trait LowerPriorityAs {
+    implicit def pure[A] =
+      new (A As Part[A]) {
+        def apply(a: A) = ValueOf(a)
+      }
+  }
+
+  object As extends LowerPriorityAs {
+    implicit def part[A] =
+      new (Part[A] As Part[A]) {
+        def apply(a: Part[A]) = a
+      }
+
+    implicit def future[A] =
+      new (Future[A] As Part[A]) {
+        def apply(a: Future[A]) = ValueOfFuture(a)
+      }
   }
 }
 

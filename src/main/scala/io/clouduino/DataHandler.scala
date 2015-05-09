@@ -21,11 +21,11 @@ class DefaultDataHandler(handler: ClientHandler)(implicit ec: ExecutionContext) 
     import programBuilder._
 
     for {
-      _               <- ValueOf(data.size > MAX_ID_SIZE) ifTrue Return(TooMuchData)
+      _               <- data.size > MAX_ID_SIZE ifTrue Return(TooMuchData)
       (idBytes, rest) =  data span (_ != ID_TERMINATOR)
-      _               <- ValueOf(rest.isEmpty) ifTrue Return(NotEnoughData(data))
+      _               <- rest.isEmpty ifTrue Return(NotEnoughData(data))
       id              =  idBytes decodeString US_ASCII.name
-      _               <- ValueOfFuture(handler isValidId id) ifFalse Return(Invalid(id))
+      _               <- handler isValidId id ifFalse Return(Invalid(id))
     } yield Extracted(id, rest drop 1)
   }
 
@@ -34,11 +34,11 @@ class DefaultDataHandler(handler: ClientHandler)(implicit ec: ExecutionContext) 
     import programBuilder._
 
     for {
-      _          <- ValueOf(data.size > MAX_MESSAGE_COUNT) ifTrue Return(TooMuchData)
-      _          <- ValueOf(data exists Protocol.isReserved) ifTrue Return(DataNotAccepted)
+      _          <- data.size > MAX_MESSAGE_COUNT ifTrue Return(TooMuchData)
+      _          <- data exists Protocol.isReserved ifTrue Return(DataNotAccepted(data))
       handleData =  convert.toUnsigned andThen (handler.handleData(id, _))
-      _          <- ValueOfFuture(Future.traverse(data)(handleData))
-    } yield DataAccepted
+      _          <- Future.traverse(data)(handleData).asPart
+    } yield DataAccepted(data)
   }
 }
 
@@ -48,7 +48,7 @@ case class Invalid(id: String) extends ExtractIdResult
 case class NotEnoughData(data: ByteString) extends ExtractIdResult
 
 sealed trait HandleDataResult
-case object DataAccepted extends HandleDataResult
-case object DataNotAccepted extends HandleDataResult
+case class DataAccepted(data: ByteString) extends HandleDataResult
+case class DataNotAccepted(data: ByteString) extends HandleDataResult
 
 case object TooMuchData extends ExtractIdResult with HandleDataResult

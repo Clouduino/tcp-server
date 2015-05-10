@@ -5,6 +5,7 @@ scalaVersion := "2.11.6"
 organization := "io.cloudiuno"
 
 libraryDependencies ++= Seq(
+  "com.typesafe.akka" %% "akka-stream-experimental" % "1.0-RC2",
   "com.typesafe.akka" %% "akka-actor" % "2.3.10"
 )
 

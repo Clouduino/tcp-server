@@ -29,7 +29,6 @@ object _02_Using_the_server extends Documentation {
    | """.stripMargin -- new Example {
      import akka.actor.Actor
      import akka.actor.Props
-     import io.clouduino.Listener
      import io.clouduino.Server
 
      class ConnectionListener extends Actor {
